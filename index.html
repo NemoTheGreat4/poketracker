@@ -150,6 +150,37 @@
   .status{color:var(--text-dim);font-size:13px;margin-top:16px;font-family:'IBM Plex Mono',monospace;}
   .error{color:var(--coral);}
 
+  /* WATCHLIST */
+  .chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;}
+  .chip{
+    background:var(--ink-2);
+    border:1px solid var(--border);
+    border-radius:20px;
+    padding:6px 8px 6px 14px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12.5px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .chip button{
+    background:none;
+    border:none;
+    color:var(--text-dim);
+    cursor:pointer;
+    font-size:15px;
+    line-height:1;
+    padding:2px 6px;
+    border-radius:50%;
+  }
+  .chip button:hover{color:var(--coral);background:rgba(255,255,255,0.06);}
+  .alert-controls{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-top:22px;}
+  button.scan-btn.secondary{background:transparent;border:1px solid var(--gold-dim);color:var(--parchment);}
+  button.scan-btn.secondary:hover{background:var(--ink-2);}
+  button.scan-btn.secondary.active{background:var(--sage);border-color:var(--sage);color:var(--parchment);}
+  .toggle-row{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--parchment-dim);cursor:pointer;}
+  .toggle-row input{accent-color:var(--gold);width:16px;height:16px;cursor:pointer;}
+
   footer{padding:30px 0 10px;color:var(--text-dim);font-size:12px;}
 
   @media(max-width:640px){
@@ -224,6 +255,28 @@
     <div class="log" id="log"></div>
   </div>
 
+  <div class="section">
+    <div class="section-head">
+      <h2>Watchlist &amp; alerts</h2>
+      <span class="section-num mono">04</span>
+    </div>
+    <p class="hint" style="margin:0 0 16px;">Add products you're hunting for. While this tab stays open, PokéTracker checks Reddit every few minutes and fires a browser notification the moment a restock-flagged post shows up for something on your list.</p>
+    <div class="scan-row">
+      <input type="text" id="watchInput" placeholder="e.g. Prismatic Evolutions booster box">
+      <button class="scan-btn" id="addWatchBtn">Add to watchlist</button>
+    </div>
+    <div class="chip-row" id="watchChips"></div>
+
+    <div class="alert-controls">
+      <button class="scan-btn secondary" id="notifyBtn">Enable browser alerts</button>
+      <label class="toggle-row">
+        <input type="checkbox" id="autoRefreshToggle">
+        <span>Auto-check every 3 minutes</span>
+      </label>
+    </div>
+    <div id="watchStatus" class="status"></div>
+  </div>
+
   <footer>
     PokéTracker checks retailer pages and community posts on Reddit — it has no direct line into any store's inventory system, so always confirm on the retailer's own site before heading out.
   </footer>
@@ -271,6 +324,41 @@ function timeAgo(unixSeconds){
   return Math.round(diffHr / 24) + 'd ago';
 }
 
+async function fetchRedditPosts(query){
+  const fetches = SUBREDDITS.map(sub=>{
+    const url = `https://www.reddit.com/r/${sub}/search.json?q=${encodeURIComponent(query)}&restrict_sr=on&sort=new&limit=8&t=week`;
+    return fetch(url, {headers: {"Accept": "application/json"}})
+      .then(r=> r.ok ? r.json() : null)
+      .catch(()=> null);
+  });
+  const results = await Promise.all(fetches);
+  let posts = [];
+  results.forEach(data=>{
+    if(data && data.data && Array.isArray(data.data.children)){
+      data.data.children.forEach(c=> posts.push(c.data));
+    }
+  });
+  return posts;
+}
+
+function renderLog(posts){
+  const log = document.getElementById('log');
+  log.innerHTML = '';
+  posts.forEach(p=>{
+    const titleLower = (p.title || '').toLowerCase();
+    const isRestock = RESTOCK_WORDS.some(w=> titleLower.includes(w));
+    const entry = document.createElement('div');
+    entry.className = 'log-entry' + (isRestock ? ' restock' : '');
+    const permalink = 'https://www.reddit.com' + p.permalink;
+    entry.innerHTML = `
+      <div class="log-time mono">${isRestock ? 'RESTOCK SIGNAL' : 'DISCUSSION'} · r/${p.subreddit} · ${timeAgo(p.created_utc)}</div>
+      <div>${p.title}</div>
+      <div class="log-source"><a href="${permalink}" target="_blank" rel="noopener noreferrer">View on Reddit</a></div>
+    `;
+    log.appendChild(entry);
+  });
+}
+
 async function scanForRestocks(){
   const btn = document.getElementById('scanBtn');
   const status = document.getElementById('status');
@@ -286,20 +374,7 @@ async function scanForRestocks(){
   const query = product ? product : 'restock';
 
   try{
-    const fetches = SUBREDDITS.map(sub=>{
-      const url = `https://www.reddit.com/r/${sub}/search.json?q=${encodeURIComponent(query)}&restrict_sr=on&sort=new&limit=8&t=week`;
-      return fetch(url, {headers: {"Accept": "application/json"}})
-        .then(r=> r.ok ? r.json() : null)
-        .catch(()=> null);
-    });
-
-    const results = await Promise.all(fetches);
-    let posts = [];
-    results.forEach(data=>{
-      if(data && data.data && Array.isArray(data.data.children)){
-        data.data.children.forEach(c=> posts.push(c.data));
-      }
-    });
+    let posts = await fetchRedditPosts(query);
 
     if(posts.length === 0){
       status.textContent = 'No recent posts found for this search. Try a broader product name, or Reddit may be temporarily unreachable — check the retailer links above.';
@@ -310,20 +385,7 @@ async function scanForRestocks(){
     posts = posts.slice(0, 15);
 
     status.textContent = `Found ${posts.length} recent post${posts.length===1?'':'s'} — last scanned ${timeNow()}.`;
-
-    posts.forEach(p=>{
-      const titleLower = (p.title || '').toLowerCase();
-      const isRestock = RESTOCK_WORDS.some(w=> titleLower.includes(w));
-      const entry = document.createElement('div');
-      entry.className = 'log-entry' + (isRestock ? ' restock' : '');
-      const permalink = 'https://www.reddit.com' + p.permalink;
-      entry.innerHTML = `
-        <div class="log-time mono">${isRestock ? 'RESTOCK SIGNAL' : 'DISCUSSION'} · r/${p.subreddit} · ${timeAgo(p.created_utc)}</div>
-        <div>${p.title}</div>
-        <div class="log-source"><a href="${permalink}" target="_blank" rel="noopener noreferrer">View on Reddit</a></div>
-      `;
-      log.appendChild(entry);
-    });
+    renderLog(posts);
 
   }catch(err){
     status.textContent = 'Scan failed: ' + err.message + '. Reddit may be blocking the request — try again shortly.';
@@ -333,6 +395,127 @@ async function scanForRestocks(){
     btn.textContent = 'Scan now';
   }
 }
+
+/* ---------- Watchlist & alerts ---------- */
+
+let watchlist = [];
+try{
+  watchlist = JSON.parse(localStorage.getItem('poketracker_watchlist') || '[]');
+}catch(e){ watchlist = []; }
+
+const notifiedPostIds = new Set();
+let autoRefreshTimer = null;
+
+function saveWatchlist(){
+  try{ localStorage.setItem('poketracker_watchlist', JSON.stringify(watchlist)); }catch(e){}
+}
+
+function renderWatchlist(){
+  const wrap = document.getElementById('watchChips');
+  wrap.innerHTML = '';
+  if(watchlist.length === 0){
+    wrap.innerHTML = '<span class="hint" style="margin:0;">No products yet — add one above.</span>';
+    return;
+  }
+  watchlist.forEach((term, i)=>{
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.innerHTML = `${term} <button aria-label="Remove" data-i="${i}">×</button>`;
+    wrap.appendChild(chip);
+  });
+  wrap.querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      watchlist.splice(parseInt(b.dataset.i, 10), 1);
+      saveWatchlist();
+      renderWatchlist();
+    });
+  });
+}
+renderWatchlist();
+
+document.getElementById('addWatchBtn').addEventListener('click', ()=>{
+  const input = document.getElementById('watchInput');
+  const val = input.value.trim();
+  if(val && !watchlist.includes(val)){
+    watchlist.push(val);
+    saveWatchlist();
+    renderWatchlist();
+    input.value = '';
+  }
+});
+document.getElementById('watchInput').addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter') document.getElementById('addWatchBtn').click();
+});
+
+const notifyBtn = document.getElementById('notifyBtn');
+function updateNotifyBtn(){
+  if(!('Notification' in window)){
+    notifyBtn.textContent = 'Alerts not supported in this browser';
+    notifyBtn.disabled = true;
+  }else if(Notification.permission === 'granted'){
+    notifyBtn.textContent = 'Browser alerts enabled';
+    notifyBtn.classList.add('active');
+  }else{
+    notifyBtn.textContent = 'Enable browser alerts';
+    notifyBtn.classList.remove('active');
+  }
+}
+updateNotifyBtn();
+
+notifyBtn.addEventListener('click', async ()=>{
+  if(!('Notification' in window)) return;
+  const perm = await Notification.requestPermission();
+  updateNotifyBtn();
+  if(perm !== 'granted'){
+    document.getElementById('watchStatus').textContent = 'Notifications blocked — check your browser\'s site settings to allow them.';
+  }
+});
+
+async function backgroundCheck(){
+  const watchStatus = document.getElementById('watchStatus');
+  if(watchlist.length === 0){
+    watchStatus.textContent = 'Add at least one product to your watchlist to start auto-checking.';
+    return;
+  }
+  watchStatus.textContent = 'Checking watchlist…';
+  try{
+    for(const term of watchlist){
+      const posts = await fetchRedditPosts(term);
+      posts.forEach(p=>{
+        const titleLower = (p.title || '').toLowerCase();
+        const isRestock = RESTOCK_WORDS.some(w=> titleLower.includes(w));
+        if(isRestock && !notifiedPostIds.has(p.id)){
+          notifiedPostIds.add(p.id);
+          if('Notification' in window && Notification.permission === 'granted'){
+            const n = new Notification('PokéTracker: possible restock', {
+              body: p.title,
+              tag: p.id
+            });
+            n.onclick = ()=> window.open('https://www.reddit.com' + p.permalink, '_blank');
+          }
+        }
+      });
+    }
+    watchStatus.textContent = `Watching ${watchlist.length} item${watchlist.length===1?'':'s'} — last checked ${timeNow()}.`;
+  }catch(err){
+    watchStatus.textContent = 'Background check failed: ' + err.message;
+  }
+}
+
+document.getElementById('autoRefreshToggle').addEventListener('change', (e)=>{
+  if(e.target.checked){
+    if(watchlist.length === 0){
+      document.getElementById('watchStatus').textContent = 'Add at least one product to your watchlist first.';
+      e.target.checked = false;
+      return;
+    }
+    backgroundCheck();
+    autoRefreshTimer = setInterval(backgroundCheck, 3 * 60 * 1000);
+  }else{
+    if(autoRefreshTimer) clearInterval(autoRefreshTimer);
+    document.getElementById('watchStatus').textContent = 'Auto-check paused.';
+  }
+});
 
 document.getElementById('scanBtn').addEventListener('click', scanForRestocks);
 document.getElementById('product').addEventListener('keydown', (e)=>{
